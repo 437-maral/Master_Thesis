@@ -1,6 +1,2 @@
 Abstract:
-This master's thesis investigates the development of a computational model for predicting nephrotoxicity induced by small molecules. Initially, various machine learning algorithms were evaluated to discern nephrotoxic compounds, with the Random Forest model demonstrating superior predictive performance. Techniques such as SMOTE and oversampling were employed to mitigate dataset imbalances, resulting in improved model robustness during cross-validation and evaluation on unseen data.
-
-Subsequently, pathological findings associated with these compounds were analyzed using toxicogenomic data from TG-Gates, focusing on gene expression profiles. Data preprocessing addressed missing values and incomplete drug records. Various gene selection methods were applied, including dose-response curve analysis, differentially expressed genes identification, statistically significant genes determination, and Weighted Co-expression Gene Network Analysis (WCGNA). WCGNA identified informative genes correlating with pathological findings.
-
-To enhance model performance, MLSMOTE was applied on selected genes to handle data imbalance. Machine learning models including RNN were tested, showing promising results across evaluation metrics. Current efforts involve refining these models and exploring alternative techniques such as DNN and PNN for further improvement.
+This master's thesis investigates the development of a computational model for predicting nephrotoxicity induced by small molecules.
