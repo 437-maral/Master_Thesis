@@ -8,50 +8,14 @@ from sklearn.metrics import accuracy_score, f1_score, auc, multilabel_confusion_
     ConfusionMatrixDisplay
 from sklearn.model_selection import KFold
 from numpy import interp
-from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
+from sklearn.base import BaseEstimator, ClassifierMixin
+
+from Evalution_metrics import *
 
 np.random.seed(1234)
 random.seed(1234)
-
-def pairwise_accuracy_score(Z, Y): 
-    Z = np.asarray(Z, dtype=int)
-    Y = np.asarray(Y, dtype=int)
-
-    f1 = 1.0 * ((Z > 0) & (Y > 0)).sum(axis=1)  # numerator
-    f2 = 1.0 * ((Z > 0) | (Y > 0)).sum(axis=1)  # denominator
-    f1[f2 == 0] = 1.0
-    f1[f2 > 0] /= f2[f2 > 0]
-
-    return f1
-
-def get_eval_para(true_value, prediction_value):
-    cnf_matrix = multilabel_confusion_matrix(true_value, prediction_value)
-    # print(cnf_matrix)
-
-    TN = cnf_matrix[:, 0, 0]
-    TP = cnf_matrix[:, 1, 1]
-    FN = cnf_matrix[:, 1, 0]
-    FP = cnf_matrix[:, 0, 1]
-    FP = FP.astype(float)
-    FN = FN.astype(float)
-    TP = TP.astype(float)
-    TN = TN.astype(float)
-
-    ACC = accuracy_score(true_value, prediction_value)
-
-    # Sensitivity, hit rate, recall, or true positive rate
-    TPR = metrics.recall_score(true_value, prediction_value, average='macro')
-
-    # Specificity or true negative rate
-    TNR = np.mean(TN / (TN + FP))
-
-    # Precision or positive predictive value
-    F1_score = f1_score(true_value, prediction_value, average='macro')
-
-    return ACC, TPR, TNR ,  F1_score ,cnf_matrix
-
 
 uniform = lambda x,b: (np.abs(x/b) <= 1) and 1/2 or 0
 triangle = lambda x,b: (np.abs(x/b) <= 1) and  (1 - np.abs(x/b)) or 0
@@ -59,205 +23,229 @@ gaussian = lambda x,b: (1.0/np.sqrt(2*np.pi))* np.exp(-.5*(x/b)**2)
 laplacian = lambda x,b: (1.0/(2*b))* np.exp(-np.abs(x/b)) 
 epanechnikov = lambda x,b: (np.abs(x/b)<=1) and ((3/4)*(1-(x/b)**2)) or 0
 
-
-###calculate distance
-def pattern_layer(X,inp,kernel,sigma):
-      k_values=[];
-      for i,p in enumerate(X):
-            edis = np.linalg.norm(p-inp); #find eucliden distance
-            k = kernel(edis,sigma); ##use gaussion or other things 
-            k_values.append(k)
-      return k_values;
-
-def summation_layer(k_values, Y_train, num_classes):
-    summation_outputs = np.zeros(num_classes)
+class PNN(BaseEstimator, ClassifierMixin):
+    def __init__(self, sigma=0.1,kernel=gaussian):
+        self.sigma = sigma
+        self.kernel=kernel
+    def fit(self, X, y):
+        self.X_ = X
+        self.y_ = y
+        self.classes_ = np.arange(y.shape[1])  # Classes are assumed to be column indices for multi-label classification
+        return self
     
-    if isinstance(Y_train, np.ndarray):
-        Y_train = pd.DataFrame(Y_train)
-        
-    for cls in range(num_classes):
-        # Get indices where the class label is 1
-        class_indices = np.where(Y_train.iloc[:, cls] == 1)[0]
-        
-        if class_indices.size > 0:  # Ensure there are indices to prevent errors
-            k_values = np.array(k_values);
-            summation_outputs[cls] = np.sum(k_values[class_indices])
-    return summation_outputs
-
-def output_layer(avg_sum, num_classes):
-    maxv = max(avg_sum)
-    label = np.argmax(avg_sum)
-    return label
-
-def PNN_Train(X_train, Y_train, X_test, kernel, sigma, batch_size=256, epochs=2):
-    # Number of classes
-    num_classes = Y_train.shape[1]
+    def _pdf(self, X):
+        n_samples = X.shape[0]
+        pdf_values = np.zeros((n_samples, self.X_.shape[0]))
+        for i in range(n_samples):
+            for j in range(self.X_.shape[0]):
+                distance = np.linalg.norm(X[i] - self.X_[j])
+                pdf_values[i, j] = self.kernel(distance, self.sigma)
+        return pdf_values
     
-    labels = []
+    def predict(self, X):
+        prob = np.zeros((X.shape[0], self.y_.shape[1]))
+        pdf_values = self._pdf(X)
+        for label in self.classes_:
+            mask = (self.y_[:, label] == 1) #find respective label
+            prob[:, label] = pdf_values[:, mask].sum(axis=1)
+        return (prob > 0.75).astype(int)  # Threshold to get binary predictions
     
-    # If batch_size is not provided, use the entire dataset as a batch
-    if batch_size is None:
-        batch_size = X_train.shape[0]
     
-    # Iterate over epochs
-    for epoch in range(epochs):
-        print(f"Epoch {epoch+1}/{epochs}")
-        
-        # Shuffle the training data at the beginning of each epoch
-        indices = np.arange(X_train.shape[0])
-        np.random.shuffle(indices)
-        X_train_shuffled = X_train[indices]
-        Y_train_shuffled = Y_train[indices]
-        
-        # Iterate over mini-batches
-        for i in range(0, len(X_train_shuffled), batch_size):
-            X_batch = X_train_shuffled[i:i+batch_size]
-            Y_batch = Y_train_shuffled[i:i+batch_size]
-            
-            # Passing each sample observation in the mini-batch
-            for s in X_test:
-                k_values = pattern_layer(X_batch, s, kernel, sigma)
-                summation_outputs = summation_layer(k_values, Y_batch, num_classes)
-                
-                # Calculate the average summation for each class
-                class_counts = Y_batch.sum(axis=0)
-                avg_sum = summation_outputs / class_counts
-                
-                label = output_layer(avg_sum, class_counts)
-                labels.append(label)
-    
-    return np.array(labels)
+    def predict_probability(self, X):
+        prob = np.zeros((X.shape[0], self.y_.shape[1]))
+        pdf_values = self._pdf(X)
+        epsilon = 1e-8
+        for label in self.classes_:
+            mask = (self.y_[:, label] == 1)
+            prob[:, label] = pdf_values[:, mask].sum(axis=1)
+        prob = np.where(prob < epsilon, epsilon, prob)  # Avoid zero probabilities
+        prob /= prob.sum(axis=1, keepdims=True)  # Normalize to get probabilities
+        return prob
 
-
-def Kfold_PNN(X, Y, kernel, sigma):
+def Kfold_PNN(X, Y,sigma=0.05):
+    '''Run Model in 10 folds'''
+    
     # K-Folds cross-validator
     kf = KFold(n_splits=10)
-    label_num=Y.shape[1]
-    # Metrics containers
+    
+    Label_num=Y.shape[1]
+    humming_Loss=[]
+    Rank_Loss=[]
+  
     ACC = []
     SPE = []
     TPR = []
     F1_score = []
-    ACC2 = []
+    
     Pairwise_Acc = []
-    Label_Acc = [[] for _ in range(Y.shape[1])]
-    mean_Label_Acc = []
+    
+    scoring_fn = pairwise_accuracy_score
+
+    Label_Acc = [[] for i in range(Y.shape[1])]  # expect to access the performance of EACH LABEL
+    mean_Label_Acc = []  # k fold average
     Average_Label_Accuracy = []
+
     tprs = []
     aucs = []
     mean_fpr = np.linspace(0, 1, 100)
 
     fold = 1
     for train_index, test_index in kf.split(X, Y):
-        print(f"{fold} fold:")
+        print(str(fold)+" fold:")
+        
         X_train, X_test = X[train_index], X[test_index]
         Y_train, Y_test = Y[train_index], Y[test_index]
+
+        # Initialize model to be used
+        clf = PNN(sigma=0.05,kernel=gaussian)
+        # train model
+        # predict
+        clf.fit(X_train, Y_train)
+        y_pred = clf.predict(X_test)
+        y_prob = clf.predict_probability(X_test)
+
+        # train set
+        trn_pred = clf.predict(X_train)
         
-        # Get prediction
         
-        print("PNN  .........")
-        pred_train = PNN_Train(X_train, Y_train, X_train, kernel, sigma)
-        pred_test = PNN_Train(X_train, Y_train, X_test, kernel, sigma)
-     
-        # Train metrics
-        print("Evalution .........")
-        ACC_trn, TPR_trn, TNR_trn, F1_score_trn, cnf_matrix_trn = get_eval_para(Y_train, pred_train)
-        print("ACC_train: " + str(ACC_trn))
-        ACC2.append(ACC_trn)
+        '''Different evalution metrcis are used'''
+        #humming_Loss
+        #Rank_Loss
+        #accuracy_socre 
+        #classification_report
+        #confusion matrics 
         
-        # Test metrics
-        ACC_tst, TPR_tst, TNR_tst, F1_score_tst, cnf_matrix_tst = get_eval_para(Y_test, pred_test)
+        humming_Loss_trn=hamming_loss(Y_train, trn_pred)
+        print("Humming_trn: " + str(humming_Loss_trn))
+        
+        humming_Loss_test=hamming_loss(Y_test,  y_pred)
+        print("Humming_test: " + str(humming_Loss_test))
+        
+        Randking_loss_trn=ranking_loss(Y_train, trn_pred)
+        print("Ranking_loss_trn: " + str(Randking_loss_trn))
+        
+        Randking_loss_tst=ranking_loss(Y_test,  y_pred)
+        print("Ranking_loss_test: " + str(Randking_loss_tst))
+        
+        
+        
+        ###for each fold 
+        #report 
+        
+        ACC_trn, TPR_trn,TNR_trn, F1_score_trn , cnf_matrix_trn = get_eval_para(Y_train, trn_pred)
+        print("ACC_trn: " + str(ACC_trn))
+        
+        
+        
+        
+        ACC_tst, TPR_tst,TNR_tst, F1_score_tst ,  cnf_matrix_tst= get_eval_para(Y_test, y_pred)
         print("ACC_test: " + str(ACC_tst))
         
-        # Collect results
+        
+        #save result 
+        
+        humming_Loss.append(humming_Loss_test)
+        Rank_Loss.append(Randking_loss_tst)
         ACC.append(ACC_tst)
         TPR.append(TPR_tst)
-        F1_score.append(F1_score_tst)
         SPE.append(TNR_tst)
+        F1_score.append(F1_score_tst)
 
-        test_avg_score = np.mean(pairwise_accuracy_score(Y_test, pred_test))
+        # calculate pairwise_accuracy_score
+        test_pred = clf.predict(X_test)
+        test_avg_score = np.mean(scoring_fn(Y_test, test_pred))
+        print("Acc_Pair_test: " + str( test_avg_score))
         Pairwise_Acc.append(test_avg_score)
         
-        # Compute ROC curve and area the curve
-        y_prob = pred_test  # You need actual probability predictions here
+        
+        
+        # compute ROC curve and area the curve
+        y_prob = y_prob
         fpr, tpr, thresholds = roc_curve(Y_test.ravel(), y_prob.ravel())
         tprs.append(interp(mean_fpr, fpr, tpr))
         tprs[-1][0] = 0.0
         roc_auc = auc(fpr, tpr)
         aucs.append(roc_auc)
 
-        # Calculate Average_Label_Accuracy and Label_Acc
+        # calculate Average_Label_Accuracy and Label_Acc
+        y_pred = y_pred
         each_label_value = []
         each_estimators_predict = []
 
-        # Transpose to save each label true value in a list
-        for i in range(len(Y_test[0])):  # Row num
+        # transposition, save each label true value in a list
+        for i in range(len(Y_test[0])):  # row num
             t = []
             for j in range(len(Y_test)):
                 t.append(Y_test[j][i])
             each_label_value.append(t)
 
-        # Transpose to save each label predict value in a list
-        for i in range(len(pred_test[0])):  # Row num
+        # transposition, save each label predict value in a list
+        for i in range(len(y_pred[0])):  # row num
             t = []
-            for j in range(len(pred_test)):
-                t.append(pred_test[j][i])
+            for j in range(len(y_pred)):
+                t.append(y_pred[j][i])
             each_estimators_predict.append(t)
 
         lbl_acc_sum = 0
-        for i in range(label_num):
-            lbl_acc = accuracy_score(each_label_value[i], each_estimators_predict[i])  # Each label accuracy in one fold
+        for i in range(0, Label_num, 1):
+            lbl_acc = accuracy_score(each_label_value[i], each_estimators_predict[i])  # each label accuracy in one fold
             Label_Acc[i].append(lbl_acc)
-            lbl_acc_sum += lbl_acc
+            lbl_acc_sum = lbl_acc_sum + lbl_acc
 
-        Average_Label_Accuracy.append(lbl_acc_sum / label_num)
-        fold += 1
+        Average_Label_Accuracy.append(lbl_acc_sum / Label_num)
 
-    # Calculate mean auc
+        fold = fold + 1
+
+    # calculate mean auc
     mean_tpr = np.mean(tprs, axis=0)
     mean_tpr[-1] = 1.0
     mean_auc = auc(mean_fpr, mean_tpr)
 
-    # K-fold mean value of label accuracy
-    for i in range(label_num):
+    # k-fold mean value of label accuracy
+    for i in range(0, Label_num, 1):
         mean_Label_Acc.append(np.mean(Label_Acc[i]))
 
     print("-------------- result ------------------")
-    print("Train:" + str(np.mean(ACC2)))
     print("Test:" + str(np.mean(ACC)))
-    print('ACC:', np.mean(ACC), 'TPR:', np.mean(TPR), 'SPE:', np.mean(SPE), 'F1_score:', np.mean(F1_score),
+    print('ACC:', np.mean(ACC), 'Hamming_Loss:', np.mean(humming_Loss), 'Rank_Loss', np.mean(Rank_Loss),
           'AUC:', mean_auc, 'Pairwise_Acc:', np.mean(Pairwise_Acc), 'Ave_Label_Acc:', np.mean(Average_Label_Accuracy))
 
     # Writing CSV Files
-    columns_name = ['ACC', 'TPR', 'SPE', 'f1', 'auc', 'pairAcc', 'aveLabAcc'] + [f'label{i+1}' for i in range(Y.shape[1])]
-    list_1 = [np.mean(ACC), np.mean(TPR), np.mean(SPE), np.mean(F1_score), mean_auc,
+    columns_name = [ 'ACC', 'TPR','spe', 'F1_score','AUC', 'Hamming_Loss', 'Rank_Loss', 'pairAcc', 'aveLabAcc',
+                    'label1', 'label2', 'label3', 'label4', 'label5', 'label6', 'label7', 'label8']
+    list_1 = [np.mean(ACC), np.mean(TPR), np.mean(SPE), np.mean(F1_score), mean_auc,np.mean(humming_Loss), np.mean(Rank_Loss),
               np.mean(Pairwise_Acc), np.mean(Average_Label_Accuracy)] + mean_Label_Acc
     
-    pd_data = pd.DataFrame(np.array(list_1).reshape(1, len(columns_name)), columns=columns_name)
-    output_path = "./PNN_result.csv"
+    pd_data = pd.DataFrame(np.array(list_1).reshape(1, 17), columns=columns_name)
+    
+    output_path = "./" + "PNN_result.csv"
     pd_data.to_csv(output_path, index=False)
 
-    # Plot ROC curve with matplotlib (only plot PNN)
+    # Plot ROC curve with matplotlib (only plot arch001)
     plt.figure("PNN")
     plt.plot((0, 1), (0, 1), c='#808080', lw=1, ls='--', alpha=0.7)  # Draw Diagonal Lines
-    plt.plot(mean_fpr, mean_tpr, color='mediumblue', label=r'PNN (AUC = %0.4f)' % mean_auc, lw=1, alpha=.8)
+    mean_tpr = np.mean(tprs, axis=0)
+    mean_tpr[-1] = 1.0
+    mean_auc = auc(mean_fpr, mean_tpr)
+    plt.plot(mean_fpr, mean_tpr, color='mediumblue', label=r'PNN(Area=%0.4f)' % mean_auc, lw=1, alpha=.8)
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
     plt.legend(loc='lower right')
-    plt.savefig("./PNN-roc-curve.pdf")
+    plt.savefig("./" + "-PNN-roc-curve.pdf")
+    # plt.show()
     plt.close("PNN")
+
     
+if __name__ == "__main__":
     
-    def main():
-        dataset = pd.read_csv('kidney mlsmote result.csv')
-        print("dataset.shape: " + str(dataset.shape))
-        X = dataset.iloc[:, 8:]  # features
-        Y = dataset.iloc[:, :8]  # labels
-        X = (X - X.min()) / (X.max() - X.min())  # min-max normalization, X are mapped to the range 0 to 1.
-        X = X.values
-        Y= Y.values
-        print("Running PNN ...")
-        Kfold_PNN(X, Y, gaussian,0.05)
-        
-    if __name__ == '__main__':
-        main()
+    # Load the iris dataset
+    dataset = pd.read_csv('kidney mlsmote result.csv')
+    print("dataset.shape: " + str(dataset.shape))
+    # split the features-X and class labels-y
+    X = dataset.iloc[:, 8:]  # features
+    Y = dataset.iloc[:, :8]  # labels
+    # Normalise the data
+    X = (X - X.min()) / (X.max() - X.min())  # min-max normalization, X are mapped to the range 0 to 1.
+    X = X.values
+    Y = Y.values
+    Kfold_PNN(X, Y)

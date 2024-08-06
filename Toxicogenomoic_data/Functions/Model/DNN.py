@@ -1,174 +1,112 @@
+
 import numpy as np
 import matplotlib.pyplot as plt
 import random
 import sys
-import scipy.sparse as sp
 import pandas as pd
 np.float = float 
 
-
+###metrics
 from sklearn import metrics
 from sklearn.metrics import accuracy_score, f1_score, auc, multilabel_confusion_matrix, roc_curve, confusion_matrix, \
     ConfusionMatrixDisplay
 from sklearn.model_selection import KFold
 
-##model 
-import torch
-from torch import nn
+from Evalution_metrics import *
 
+##model 
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+import tensorflow as tf , keras
 ##optimizer
-import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from keras.optimizers import Nadam, Adam, Optimizer, Adadelta
 from numpy import interp
+
+from tensorflow.keras.regularizers import L1,L2,L1L2
+
+
+
 
 np.random.seed(1234)
 random.seed(1234)
 
-def get_eval_para(true_value, prediction_value):
-    cnf_matrix = multilabel_confusion_matrix(true_value, prediction_value)
-    # print(cnf_matrix)
 
-    TN = cnf_matrix[:, 0, 0]
-    TP = cnf_matrix[:, 1, 1]
-    FN = cnf_matrix[:, 1, 0]
-    FP = cnf_matrix[:, 0, 1]
-    FP = FP.astype(float)
-    FN = FN.astype(float)
-    TP = TP.astype(float)
-    TN = TN.astype(float)
 
-    ACC = accuracy_score(true_value, prediction_value)
-
-    # Sensitivity, hit rate, recall, or true positive rate
-    TPR = metrics.recall_score(true_value, prediction_value, average='macro')
-
-    # Specificity or true negative rate
-    TNR = np.mean(TN / (TN + FP))
-
-    # Precision or positive predictive value
-    F1_score = f1_score(true_value, prediction_value, average='macro')
-
-    return ACC, TPR, TNR ,  F1_score ,cnf_matrix
-
-def pairwise_accuracy_score(Z, Y): 
-    Z = np.asarray(Z, dtype=int)
-    Y = np.asarray(Y, dtype=int)
-
-    f1 = 1.0 * ((Z > 0) & (Y > 0)).sum(axis=1)  # numerator
-    f2 = 1.0 * ((Z > 0) | (Y > 0)).sum(axis=1)  # denominator
-    f1[f2 == 0] = 1.0
-    f1[f2 > 0] /= f2[f2 > 0]
-
-    return f1
-
-class GeneDataset(Dataset):
-    def __init__(self, features, labels=None):
-        self.features = torch.tensor(features, dtype=torch.float32)
-        self.labels = torch.tensor(labels, dtype=torch.float32) if labels is not None else None
-
-    def __len__(self):
-        return len(self.features)
-
-    def __getitem__(self, idx):
-        if self.labels is not None:
-            return self.features[idx], self.labels[idx]
-        else:
-            return self.features[idx]
-        
-        
         
 '''This simpelest model for prediction of multi-label classification'''
 
-class DNN(nn.Module):
-    def __init__(self, input_size, output_size):
-        super(DNN, self).__init__()
-        # Define the layers
-        self.fc1 = nn.Linear(input_size, 128)  
-        self.fc2 = nn.Linear(128, 128)              # Dropout layer with 10% dropout rate       
-        self.fc3 = nn.Linear(128, output_size) # Output layer
-
-    def forward(self, x):
-        # Forward pass through the network
-        x = torch.relu(self.fc1(x))         
-        x = torch.relu(self.fc2(x))                          
-        x = torch.sigmoid
-        
+def DNN_tns(dim_no,class_no,l2w=1e-5):
+    if l2w is None:
+            regularizer = None
+    else:
+        regularizer = L2(l2w)
+    # create simple mlp
+    model = Sequential()
+    model.add(Dense(128, input_dim=dim_no, activation='relu'))
+    model.add(Dense(128, activation='relu'))
+    model.add(Dense(128, activation='relu'))
+    model.add(Dense(class_no, activation='sigmoid'))
+    
+    
+    return model
 class GeneDNN:
-    def __init__(self, n_features: int, n_labels: int, l2w: float,
-                 learning_rate=0.001, decay=0., b: int = 3, batch_size: int = 256,
-                 nb_epochs: int = 2, optimizer='Adam'):
+    """
+    Genomic Deep Learning Model For Multi Label Classification 
+
+    Parameters
+    ----------
+    n_features: int
+    n_labels: int
+    scoring_fn:
+    b: int, optional, default=3
+    nb_epochs: int
+        number of epochs to train, to save time, we just train 100 epochs
+        train the training data n times
+    batch_size: int, optional, default=256
+
+    Attributes
+    ----------
+    model : keras.models.Model instance
+    """
+    def __init__(self, n_features, n_labels, l2w,learning_rate=0.001, decay=0., b=3, batch_size=256, nb_epochs=2, optimizer='Adam'):
         self.batch_size = batch_size
         self.b = b
         self.nb_epochs = nb_epochs
         self.l2w = l2w
         self.n_labels = n_labels
         self.n_features = n_features
-        self.model = DNN(n_features, n_labels)
-        #self.patience = patience
-
-        if optimizer is None:
-            raise ValueError('You should provide an argument for the optimizer')
-        elif optimizer == 'Adam':
-            self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=decay)
+        self.model = DNN_tns(n_features, n_labels)
+        self.model.summary()
+        
+        if optimizer == 'Adam':
+            self.optimizer = Adam(learning_rate=learning_rate, decay=decay)
         elif optimizer == 'Adadelta':
-            self.optimizer = optim.Adadelta(self.model.parameters(), lr=learning_rate, weight_decay=decay)
-        elif optimizer == 'Adagrad':
-            self.optimizer = optim.Adagrad(self.model.parameters(), lr=learning_rate, weight_decay=decay)
+            self.optimizer = Adadelta(learning_rate=learning_rate, decay=decay)
+        elif optimizer is None:
+            self.optimizer = Nadam()
         else:
             raise ValueError(f"Unknown optimizer: {optimizer}")
 
-    def train(self, X, Y, val_X=None, val_Y=None):
-        nb_epochs = self.nb_epochs
-        optimizer = self.optimizer
-        model = self.model
-        self.criterion = nn.BCELoss()
-        
-        dataset = GeneDataset(X, Y)
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        self.model.compile(optimizer=optimizer, loss='binary_crossentropy')
 
 
-        for epoch in range(nb_epochs):
-            model.train()
-            running_loss = 0.0
-            for inputs, labels in dataloader:
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                loss = self.criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
-                running_loss += loss.item()
-            print(f'Epoch {epoch + 1}, Loss: {running_loss / len(dataloader)}')
+    def train(self, X, Y):
+        self.model.fit(X, Y, epochs=self.nb_epochs, batch_size=self.batch_size)
         
-        print('Finished Training')
+    def evaluate(self, X, Y):
+        return self.model.evaluate(X, Y)
 
     def predict(self, X):
-        model = self.model
-        model.eval()
-        predictions = []
-        dataloader = DataLoader(GeneDataset(X), batch_size=self.batch_size, shuffle=False)
-        with torch.no_grad():
-            for inputs in dataloader:
-                outputs = model(inputs)
-                predicted = (outputs > 0.75).float()
-                predictions.append(predicted)
-        return torch.cat(predictions, dim=0)
-    
+        return (self.model.predict(X) > 0.75).astype(float)
+
     def predict_probability(self, X):
-        model = self.model
-        model.eval()
-        probabilities = []
-        dataloader = DataLoader(GeneDataset(X), batch_size=self.batch_size, shuffle=False)
-        with torch.no_grad():
-            for inputs in dataloader:
-                outputs = model(inputs)
-                #don't change to specefic format 
-                probabilities.append(outputs)
-        return torch.cat(probabilities, dim=0)
+        return self.model.predict(X)
     
     
+def Kfold_GNN(X, Y):
+    '''Run Model in 10 folds'''
     
-    def Kfold_GNN(X, Y):
-        # K-Folds cross-validator
+    # K-Folds cross-validator
     kf = KFold(n_splits=10)
 
     # l2 parameter
@@ -176,12 +114,21 @@ class GeneDNN:
 
     feat_num = X.shape[1]
     label_num = Y.shape[1]
+    
+    
+    ###label names 
+    label_names=['Necrosis', 'Dilatation', 'Dilatation, cystic', 'Cast,hyaline',
+       'Regeneration', 'Cyst', 'Cellular infiltration, lymphocyte',
+       'Change, basophilic']
 
+
+    humming_Loss=[]
+    Rank_Loss=[]
+  
     ACC = []
     SPE = []
     TPR = []
     F1_score = []
-    ACC2 = []
     
     Pairwise_Acc = []
     
@@ -198,12 +145,13 @@ class GeneDNN:
     fold = 1
     for train_index, test_index in kf.split(X, Y):
         print(str(fold)+" fold:")
+        
         X_train, X_test = X[train_index], X[test_index]
         Y_train, Y_test = Y[train_index], Y[test_index]
 
-        # Initialize the classifier to be use
-        clf = GeneDNN(n_features=feat_num, n_labels=label_num, nb_epochs=200,
-                         l2w=param,b=3)
+        # Initialize model to be used
+        clf = GeneDNN(n_features=feat_num, n_labels=label_num,
+                         b=3,nb_epochs=200,l2w=param,batch_size=64)
         # train model
         clf.train(X_train, Y_train)
         # predict
@@ -212,22 +160,59 @@ class GeneDNN:
 
         # train set
         trn_pred = clf.predict(X_train)
+        
+        
+        '''Different evalution metrcis are used'''
+        #humming_Loss
+        #Rank_Loss
+        #accuracy_socre 
+        #classification_report
+        #confusion matrics 
+        
+        humming_Loss_trn=hamming_loss(Y_train, trn_pred)
+        print("Humming_trn: " + str(humming_Loss_trn))
+        
+        humming_Loss_test=hamming_loss(Y_test,  y_pred)
+        print("Humming_test: " + str(humming_Loss_test))
+        
+        Randking_loss_trn=ranking_loss(Y_train, trn_pred)
+        print("Ranking_loss_trn: " + str(Randking_loss_trn))
+        
+        Randking_loss_tst=ranking_loss(Y_test,  y_pred)
+        print("Ranking_loss_test: " + str(Randking_loss_tst))
+        
+        
+        
+        ###for each fold 
+        #report 
+        save_classification_report(Y_test,  y_pred,label_names,fold,output_dir='./Classification_Report')
+        #-----------Confusion_Matrix
+        cnf_plot(Y_test,  y_pred,label_names,fold,output_dir='./Confusion_Matrix')
+
      
         ACC_trn, TPR_trn,TNR_trn, F1_score_trn , cnf_matrix_trn = get_eval_para(Y_train, trn_pred)
         print("ACC_trn: " + str(ACC_trn))
-        ACC2.append(ACC_trn)
-        ACC_tst, TPR_tst,TNR_tst, F1_score_tst ,  cnf_matrix_tst= get_eval_para(Y_test, y_pred)
-        print("ACC_tst: " + str(ACC_tst))
         
-        ###COLLECT RESULT
+        
+        
+        
+        ACC_tst, TPR_tst,TNR_tst, F1_score_tst ,  cnf_matrix_tst= get_eval_para(Y_test, y_pred)
+        print("ACC_test: " + str(ACC_tst))
+        
+        
+        #save result 
+        
+        humming_Loss.append(humming_Loss_test)
+        Rank_Loss.append(Randking_loss_tst)
         ACC.append(ACC_tst)
         TPR.append(TPR_tst)
-        F1_score.append(F1_score_tst)
         SPE.append(TNR_tst)
+        F1_score.append(F1_score_tst)
 
         # calculate pairwise_accuracy_score
         test_pred = clf.predict(X_test)
         test_avg_score = np.mean(scoring_fn(Y_test, test_pred))
+        print("Acc_Pair_test: " + str( test_avg_score))
         Pairwise_Acc.append(test_avg_score)
         
         
@@ -279,23 +264,22 @@ class GeneDNN:
         mean_Label_Acc.append(np.mean(Label_Acc[i]))
 
     print("-------------- result ------------------")
-    print("train:" + str(np.mean(ACC2)))
-    print("test:" + str(np.mean(ACC)))
-    print('ACC:', np.mean(ACC), 'TPR:', np.mean(TPR), 'SPE', np.mean(SPE), 'F1_score:', np.mean(F1_score),
+    print("Test:" + str(np.mean(ACC)))
+    print('ACC:', np.mean(ACC), 'Hamming_Loss:', np.mean(humming_Loss), 'Rank_Loss', np.mean(Rank_Loss),
           'AUC:', mean_auc, 'Pairwise_Acc:', np.mean(Pairwise_Acc), 'Ave_Label_Acc:', np.mean(Average_Label_Accuracy))
 
     # Writing CSV Files
-    columns_name = [ 'ACC', 'TPR', 'spe', 'f1', 'auc', 'pairAcc', 'aveLabAcc',
+    columns_name = [ 'ACC', 'TPR','spe', 'F1_score','AUC', 'Hamming_Loss', 'Rank_Loss', 'pairAcc', 'aveLabAcc',
                     'label1', 'label2', 'label3', 'label4', 'label5', 'label6', 'label7', 'label8']
-    list_1 = [np.mean(ACC), np.mean(TPR), np.mean(SPE), np.mean(F1_score), mean_auc,
+    list_1 = [np.mean(ACC), np.mean(TPR), np.mean(SPE), np.mean(F1_score), mean_auc,np.mean(humming_Loss), np.mean(Rank_Loss),
               np.mean(Pairwise_Acc), np.mean(Average_Label_Accuracy)] + mean_Label_Acc
     
-    pd_data = pd.DataFrame(np.array(list_1).reshape(1, 15), columns=columns_name)
+    pd_data = pd.DataFrame(np.array(list_1).reshape(1, 17), columns=columns_name)
     
     output_path = "./" + "DNN_result.csv"
     pd_data.to_csv(output_path, index=False)
 
- 
+    # Plot ROC curve with matplotlib (only plot arch001)
     plt.figure("DNN")
     plt.plot((0, 1), (0, 1), c='#808080', lw=1, ls='--', alpha=0.7)  # Draw Diagonal Lines
     mean_tpr = np.mean(tprs, axis=0)
